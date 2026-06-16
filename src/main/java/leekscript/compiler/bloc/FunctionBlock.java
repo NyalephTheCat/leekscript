@@ -40,6 +40,8 @@ public class FunctionBlock extends AbstractLeekBlock implements Annotatable {
 	private LeekVariable variable;
 	// Lazy : la grande majorité des fonctions n'ont aucune annotation.
 	private EnumSet<Annotation> annotations = null;
+	// Raison optionnelle d'un @deprecated("raison"), null sinon.
+	private String deprecatedReason = null;
 
 	public FunctionBlock(AbstractLeekBlock parent, MainLeekBlock main, Token token) {
 		super(parent, main);
@@ -305,14 +307,23 @@ public class FunctionBlock extends AbstractLeekBlock implements Annotatable {
 		annotations.add(a);
 	}
 
+	public void addAnnotation(Annotation a, String reason) {
+		addAnnotation(a);
+		if (a == Annotation.DEPRECATED && reason != null) deprecatedReason = reason;
+	}
+
 	public boolean hasAnnotation(Annotation a) {
 		return annotations != null && annotations.contains(a);
+	}
+
+	public String getDeprecatedReason() {
+		return deprecatedReason;
 	}
 
 	public void declare(WordCompiler compiler) {
 		variable = new LeekVariable(token, VariableType.FUNCTION, type, this);
 		if (annotations != null) {
-			for (var a : annotations) variable.addAnnotation(a);
+			for (var a : annotations) variable.addAnnotation(a, deprecatedReason);
 		}
 		compiler.getCurrentBlock().addVariable(variable);
 	}

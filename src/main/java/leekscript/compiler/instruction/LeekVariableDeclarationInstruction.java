@@ -38,6 +38,8 @@ public class LeekVariableDeclarationInstruction extends LeekInstruction implemen
 	private LeekType leekType;
 	// Lazy : la grande majorité des déclarations n'ont aucune annotation.
 	private EnumSet<Annotation> annotations = null;
+	// Raison optionnelle d'un @deprecated("raison"), null sinon.
+	private String deprecatedReason = null;
 
 	public LeekVariableDeclarationInstruction(WordCompiler compiler, Token token, AbstractLeekBlock function, Type type) {
 		this.token = token;
@@ -57,6 +59,11 @@ public class LeekVariableDeclarationInstruction extends LeekInstruction implemen
 	public void addAnnotation(Annotation a) {
 		if (annotations == null) annotations = EnumSet.noneOf(Annotation.class);
 		annotations.add(a);
+	}
+
+	public void addAnnotation(Annotation a, String reason) {
+		addAnnotation(a);
+		if (a == Annotation.DEPRECATED && reason != null) deprecatedReason = reason;
 	}
 
 	public void setValue(Expression value) {
@@ -262,7 +269,7 @@ public class LeekVariableDeclarationInstruction extends LeekInstruction implemen
 				// On ajoute la variable
 				this.variable = new LeekVariable(token, VariableType.LOCAL, type, this);
 				if (annotations != null) {
-					for (var a : annotations) this.variable.addAnnotation(a);
+					for (var a : annotations) this.variable.addAnnotation(a, deprecatedReason);
 				}
 				compiler.getCurrentBlock().addVariable(this.variable);
 			}

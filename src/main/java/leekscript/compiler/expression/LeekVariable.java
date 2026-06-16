@@ -43,6 +43,8 @@ public class LeekVariable extends Expression {
 	// EnumSet.noneOf alloue un RegularEnumSet pour chaque variable construite,
 	// ce qui se voit dans le profile sur Quantum (~milliers de LeekVariable).
 	private EnumSet<Annotation> annotations = null;
+	// Raison optionnelle d'un @deprecated("raison"), null sinon.
+	private String deprecatedReason = null;
 
 	public LeekVariable(Token token, VariableType type) {
 		this.token = token;
@@ -169,8 +171,22 @@ public class LeekVariable extends Expression {
 		annotations.add(a);
 	}
 
+	public void addAnnotation(Annotation a, String reason) {
+		addAnnotation(a);
+		if (a == Annotation.DEPRECATED && reason != null) deprecatedReason = reason;
+	}
+
 	public boolean hasAnnotation(Annotation a) {
 		return annotations != null && annotations.contains(a);
+	}
+
+	public String getDeprecatedReason() {
+		return deprecatedReason;
+	}
+
+	// Paramètres du warning @deprecated : juste le nom, ou nom + raison si fournie.
+	private static String[] deprecatedParams(String name, String reason) {
+		return reason == null ? new String[] { name } : new String[] { name, reason };
 	}
 
 	@Override
@@ -194,7 +210,7 @@ public class LeekVariable extends Expression {
 			this.variable = v;
 			v.addUsage();
 			if (v.hasAnnotation(Annotation.DEPRECATED)) {
-				compiler.addError(new AnalyzeError(token, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_DEPRECATED_CALL, new String[] { v.getName() }));
+				compiler.addError(new AnalyzeError(token, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_DEPRECATED_CALL, deprecatedParams(v.getName(), v.getDeprecatedReason())));
 			}
 			if (v.getDeclaration() != null && v.getDeclaration().getFunction() != compiler.getCurrentFunction()) {
 				v.getDeclaration().setCaptured();
@@ -212,7 +228,7 @@ public class LeekVariable extends Expression {
 			this.variableType = f.getType();
 			f.getVariable().addUsage();
 			if (f.hasAnnotation(Annotation.DEPRECATED)) {
-				compiler.addError(new AnalyzeError(token, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_DEPRECATED_CALL, new String[] { f.getName() }));
+				compiler.addError(new AnalyzeError(token, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_DEPRECATED_CALL, deprecatedParams(f.getName(), f.getDeprecatedReason())));
 			}
 			return;
 		}

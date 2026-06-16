@@ -58,7 +58,7 @@ import leekscript.compiler.instruction.LeekVariableDeclarationInstruction;
 
 public class WordCompiler {
 
-	private static final List<Token> NO_ANNOTATIONS = List.of();
+	private static final List<AnnotationDef> NO_ANNOTATIONS = List.of();
 
 	private MainLeekBlock mMain;
 	private AbstractLeekBlock mCurentBlock;
@@ -498,7 +498,7 @@ public class WordCompiler {
 						return;
 					} else {
 						for (var ann : annotations) {
-							addError(new AnalyzeError(ann, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_INVALID_CONTEXT, new String[] { ann.getWord() }));
+							addError(new AnalyzeError(ann.name, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_INVALID_CONTEXT, new String[] { ann.name.getWord() }));
 						}
 						return;
 					}
@@ -557,7 +557,7 @@ public class WordCompiler {
 		if (mTokens.eat().getType() != TokenType.PAR_RIGHT) throw new LeekCompilerException(mTokens.get(), Error.CLOSING_PARENTHESIS_EXPECTED);
 	}
 
-	private void functionBlock(Token functionToken, List<Token> annotations) throws LeekCompilerException {
+	private void functionBlock(Token functionToken, List<AnnotationDef> annotations) throws LeekCompilerException {
 		// Déclaration de fonction utilisateur
 		if (!mCurentBlock.equals(mMain)) {
 			addError(new AnalyzeError(mTokens.get(), AnalyzeErrorLevel.ERROR, Error.FUNCTION_ONLY_IN_MAIN_BLOCK));
@@ -1166,7 +1166,7 @@ public class WordCompiler {
 		mCurentBlock = bloc;
 	}
 
-	private void globalDeclaration(List<Token> annotations) throws LeekCompilerException {
+	private void globalDeclaration(List<AnnotationDef> annotations) throws LeekCompilerException {
 		// Il y a au moins une premiere variable
 		Token token = mTokens.eat();
 
@@ -1216,6 +1216,19 @@ public class WordCompiler {
 		if (mTokens.hasMoreTokens() && mTokens.get().getType() == TokenType.END_INSTRUCTION) mTokens.skip();
 	}
 
+	/**
+	 * Une annotation parsée : son nom et, optionnellement, une raison (ex:
+	 * {@code @deprecated("use x instead")}).
+	 */
+	private static class AnnotationDef {
+		final Token name;
+		final String reason; // null si pas d'argument
+		AnnotationDef(Token name, String reason) {
+			this.name = name;
+			this.reason = reason;
+		}
+	}
+
 	private boolean isAnnotationStart() {
 		if (version < 4) return false;
 		if (mTokens.get().getType() != TokenType.OPERATOR || !mTokens.get().getWord().equals("@")) return false;
@@ -1223,37 +1236,61 @@ public class WordCompiler {
 		// Lookahead: verify the token after the annotation name is a declaration keyword or another @
 		// to distinguish annotation syntax from @variable reference expressions
 		var after = mTokens.get(2);
-		return after.getType() == TokenType.VAR
-			|| after.getType() == TokenType.FUNCTION
-			|| after.getType() == TokenType.GLOBAL
-			|| after.getType() == TokenType.CLASS
-			|| (after.getType() == TokenType.OPERATOR && after.getWord().equals("@"));
+		// Argument optionnel : @deprecated("raison") — on doit vérifier que la
+		// parenthèse contient bien une string suivie d'une cible d'annotation,
+		// sinon c'est une expression @variable(...) tout à fait normale.
+		if (after.getType() == TokenType.PAR_LEFT) {
+			if (mTokens.get(3).getType() != TokenType.VAR_STRING) return false;
+			if (mTokens.get(4).getType() != TokenType.PAR_RIGHT) return false;
+			return isAnnotationTarget(mTokens.get(5));
+		}
+		return isAnnotationTarget(after);
 	}
 
-	private ArrayList<Token> collectAnnotations() {
-		var list = new ArrayList<Token>();
+	// Retire les guillemets entourant un littéral VAR_STRING (cf. LeekString).
+	private static String unquote(String s) {
+		return s.length() >= 2 ? s.substring(1, s.length() - 1) : s;
+	}
+
+	private boolean isAnnotationTarget(Token token) {
+		return token.getType() == TokenType.VAR
+			|| token.getType() == TokenType.FUNCTION
+			|| token.getType() == TokenType.GLOBAL
+			|| token.getType() == TokenType.CLASS
+			|| (token.getType() == TokenType.OPERATOR && token.getWord().equals("@"));
+	}
+
+	private ArrayList<AnnotationDef> collectAnnotations() {
+		var list = new ArrayList<AnnotationDef>();
 		while (isAnnotationStart()) {
 			mTokens.skip(); // consume '@'
-			list.add(mTokens.eat()); // consume the annotation name
+			Token name = mTokens.eat(); // consume the annotation name
+			String reason = null;
+			if (mTokens.get().getType() == TokenType.PAR_LEFT) {
+				mTokens.skip(); // consume '('
+				reason = unquote(mTokens.eat().getWord()); // consume the reason string
+				mTokens.skip(); // consume ')'
+			}
+			list.add(new AnnotationDef(name, reason));
 		}
 		return list;
 	}
 
-	private void applyAnnotations(Annotatable target, List<Token> annotations) throws LeekCompilerException {
+	private void applyAnnotations(Annotatable target, List<AnnotationDef> annotations) throws LeekCompilerException {
 		// Garde isEmpty : itérer un List.of() vide alloue quand même un ListItr.
 		// La majorité des declarations n'ont pas d'annotation.
 		if (annotations.isEmpty()) return;
 		for (var ann : annotations) {
-			var a = Annotation.fromString(ann.getWord());
+			var a = Annotation.fromString(ann.name.getWord());
 			if (a != null) {
-				target.addAnnotation(a);
+				target.addAnnotation(a, ann.reason);
 			} else {
-				addError(new AnalyzeError(ann, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_UNKNOWN, new String[] { ann.getWord() }));
+				addError(new AnalyzeError(ann.name, AnalyzeErrorLevel.WARNING, Error.ANNOTATION_UNKNOWN, new String[] { ann.name.getWord() }));
 			}
 		}
 	}
 
-	private void variableDeclaration(LeekType type, List<Token> annotations) throws LeekCompilerException {
+	private void variableDeclaration(LeekType type, List<AnnotationDef> annotations) throws LeekCompilerException {
 		// Il y a au moins une premiere variable
 		Token word = mTokens.eat();
 		if (word.getType() != TokenType.STRING) {
@@ -1304,7 +1341,7 @@ public class WordCompiler {
 		}
 	}
 
-	public void classDeclaration(List<Token> annotations) throws LeekCompilerException {
+	public void classDeclaration(List<AnnotationDef> annotations) throws LeekCompilerException {
 		// Read class name
 		Token word = mTokens.eat();
 		if (word.getType() != TokenType.STRING) {
@@ -1335,14 +1372,22 @@ public class WordCompiler {
 			if (isInterrupted()) throw new LeekCompilerException(mTokens.get(), Error.AI_TIMEOUT);
 			word = mTokens.get();
 			// Lazy : la grande majorité des membres de classe n'ont aucune annotation.
-			List<Token> classAnnotations = NO_ANNOTATIONS;
+			List<AnnotationDef> classAnnotations = NO_ANNOTATIONS;
 			// In class body, any @identifier is an annotation (@ references not valid here)
 			while (version >= 4
 					&& mTokens.get().getType() == TokenType.OPERATOR && mTokens.get().getWord().equals("@")
 					&& mTokens.get(1).getType() == TokenType.STRING) {
 				mTokens.skip(); // consume '@'
 				if (classAnnotations == NO_ANNOTATIONS) classAnnotations = new ArrayList<>();
-				classAnnotations.add(mTokens.eat()); // consume annotation name
+				Token name = mTokens.eat(); // consume annotation name
+				String reason = null;
+				// Argument optionnel : @deprecated("raison")
+				if (mTokens.get().getType() == TokenType.PAR_LEFT && mTokens.get(1).getType() == TokenType.VAR_STRING && mTokens.get(2).getType() == TokenType.PAR_RIGHT) {
+					mTokens.skip(); // consume '('
+					reason = unquote(mTokens.eat().getWord()); // consume reason string
+					mTokens.skip(); // consume ')'
+				}
+				classAnnotations.add(new AnnotationDef(name, reason));
 				word = mTokens.get();
 			}
 			switch (word.getWord()) {
@@ -1386,7 +1431,7 @@ public class WordCompiler {
 		mCurrentClass = null;
 	}
 
-	public void classStaticMember(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, List<Token> annotations) throws LeekCompilerException {
+	public void classStaticMember(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, List<AnnotationDef> annotations) throws LeekCompilerException {
 		Token token = mTokens.get();
 		switch (token.getWord()) {
 			case "final":
@@ -1397,7 +1442,7 @@ public class WordCompiler {
 		endClassMember(classDeclaration, accessLevel, true, false, annotations);
 	}
 
-	public void classAccessLevelMember(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, List<Token> annotations) throws LeekCompilerException {
+	public void classAccessLevelMember(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, List<AnnotationDef> annotations) throws LeekCompilerException {
 		Token token = mTokens.get();
 		switch (token.getWord()) {
 			case "constructor":
@@ -1416,7 +1461,7 @@ public class WordCompiler {
 		endClassMember(classDeclaration, accessLevel, false, false, annotations);
 	}
 
-	public void endClassMember(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, boolean isStatic, boolean isFinal, List<Token> annotations) throws LeekCompilerException {
+	public void endClassMember(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, boolean isStatic, boolean isFinal, List<AnnotationDef> annotations) throws LeekCompilerException {
 
 		var isStringMethod = mTokens.get().getWord().equals("string") && mTokens.get(1).getType() == TokenType.PAR_LEFT;
 
@@ -1462,7 +1507,7 @@ public class WordCompiler {
 		if (mTokens.get().getType() == TokenType.END_INSTRUCTION) mTokens.skip();
 	}
 
-	public void classConstructor(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, Token token, List<Token> annotations) throws LeekCompilerException {
+	public void classConstructor(ClassDeclarationInstruction classDeclaration, AccessLevel accessLevel, Token token, List<AnnotationDef> annotations) throws LeekCompilerException {
 		ClassMethodBlock constructor = classMethod(classDeclaration, token, true, false, Type.VOID);
 		applyAnnotations(constructor, annotations);
 		classDeclaration.addConstructor(this, constructor, accessLevel);

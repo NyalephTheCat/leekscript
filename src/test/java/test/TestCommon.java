@@ -161,6 +161,37 @@ public class TestCommon {
 			});
 		}
 
+		// Vérifie qu'un warning du type donné est émis et que l'un de ses
+		// paramètres contient la sous-chaîne attendue (ex: la raison d'un @deprecated).
+		public String warningContains(Error type, String expectedParam) {
+			return run(new Checker() {
+				public boolean check(Result result) {
+					if (result.ai == null) return false;
+					var errors = result.ai.getFile().getErrors();
+					if (errors.isEmpty()) return false;
+					var error = errors.get(0);
+					if (error.level != AnalyzeErrorLevel.WARNING || error.error != type) return false;
+					if (error.parameters == null) return false;
+					for (var p : error.parameters) {
+						if (p != null && p.contains(expectedParam)) return true;
+					}
+					return false;
+				}
+				public String getExpected() { return "warning " + type.name() + " with param containing \"" + expectedParam + "\""; }
+				public String getResult(Result result) {
+					if (result.ai != null) {
+						var errors = result.ai.getFile().getErrors();
+						if (!errors.isEmpty()) {
+							var error = errors.get(0);
+							return "warning " + error.error.name() + " params=" + java.util.Arrays.toString(error.parameters);
+						}
+					}
+					if (result.error != Error.NONE) return result.error.name();
+					return "no warning";
+				}
+			});
+		}
+
 		public String any_error() {
 			return run(new Checker() {
 				public boolean check(Result result) {

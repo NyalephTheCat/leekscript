@@ -51,6 +51,21 @@ public class TestAnnotations extends TestCommon {
 
 		// @deprecated does NOT suppress unused warning in strict mode
 		code_strict_v4_("@deprecated var x = 5; return 0").warning(Error.UNUSED_VARIABLE);
+
+		// @deprecated accepts an optional reason: @deprecated("use x instead")
+		code_v4_("@deprecated(\"use y instead\") var x = 5; return x").warning(Error.ANNOTATION_DEPRECATED_CALL);
+		code_v4_("@deprecated(\"use bar instead\") function foo() { return 1; } return foo()").warning(Error.ANNOTATION_DEPRECATED_CALL);
+
+		// The reason is propagated to the warning parameters, without surrounding quotes
+		code_v4_("@deprecated(\"use y instead\") var x = 5; return x").warningContains(Error.ANNOTATION_DEPRECATED_CALL, "use y instead");
+		code_v4_("@deprecated(\"use bar instead\") function foo() { return 1; } return foo()").warningContains(Error.ANNOTATION_DEPRECATED_CALL, "use bar instead");
+
+		// A reason-carrying @deprecated still runs correctly and only warns at usage
+		code_v4_("@deprecated(\"old\") function foo() { return 42; } return foo()").equals("42");
+		code_v4_("@deprecated(\"old\") var x = 5; return 0").noWarning();
+
+		// The reason argument does not break @-reference expressions (e.g. @x function call value)
+		code_v4_("var f = (x) -> x; @deprecated var g = f; return g(3)").equals("3");
 	}
 
 	@Test
