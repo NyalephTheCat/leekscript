@@ -54,6 +54,8 @@ public class ClassLeekValue extends FunctionLeekValue<Object> {
 	public LinkedHashMap<String, ObjectVariableValue> staticFields = new LinkedHashMap<>();
 	public HashMap<Integer, ClassMethod> constructors = new HashMap<>();
 	public HashMap<String, ClassMethod> methods = new HashMap<>();
+	// Clés "name_argCount" pour lesquelles plusieurs surcharges typées sont enregistrées.
+	public java.util.HashSet<String> overloadedMethods = new java.util.HashSet<>();
 	public HashMap<String, Object> genericMethods = new HashMap<>();
 	public HashMap<String, ClassStaticMethod> staticMethods = new HashMap<>();
 	public HashMap<String, Object> genericStaticMethods = new HashMap<>();
@@ -132,7 +134,13 @@ public class ClassLeekValue extends FunctionLeekValue<Object> {
 	}
 
 	public void addMethod(String method, int argCount, FunctionLeekValue function, AccessLevel level) throws LeekRunException {
-		methods.put(method + "_" + argCount, new ClassMethod(function, level));
+		String key = method + "_" + argCount;
+		if (methods.containsKey(key)) {
+			// Surcharge typée déjà enregistrée à cette arité : le dispatch se fera selon
+			// les types réels (cf addGenericMethod / AI.findMethodForArguments).
+			overloadedMethods.add(key);
+		}
+		methods.put(key, new ClassMethod(function, level));
 		if (ai.getVersion() >= 4) {
 			((ArrayLeekValue) this.methodsArray).add(method);
 		} else {
@@ -151,9 +159,24 @@ public class ClassLeekValue extends FunctionLeekValue<Object> {
 				}
 
 				final var methodCode = method + "_" + (arguments.length - 1);
+				final var realArgs = Arrays.copyOfRange(arguments, 1, arguments.length);
+				// Surcharges typées : on choisit la méthode Java selon les types réels.
+				if (overloadedMethods.contains(methodCode) && clazz != null) {
+					Method jm = AI.findMethodForArguments(clazz, "u_" + method, realArgs);
+					if (jm != null) {
+						try {
+							return jm.invoke(arguments[0], realArgs);
+						} catch (InvocationTargetException e) {
+							if (e.getCause() instanceof LeekRunException lre) throw lre;
+							ErrorManager.exception(e);
+						} catch (IllegalAccessException | IllegalArgumentException e) {
+							ErrorManager.exception(e);
+						}
+					}
+				}
 				final var m = methods.get(methodCode);
 				if (m != null) {
-					return m.value.run(ai, arguments[0], Arrays.copyOfRange(arguments, 1, arguments.length));
+					return m.value.run(ai, arguments[0], realArgs);
 				}
 				ai.addSystemLog(leekscript.AILog.ERROR, Error.UNKNOWN_METHOD, new String[] { name, createMethodError(methodCode) });
 				return null;

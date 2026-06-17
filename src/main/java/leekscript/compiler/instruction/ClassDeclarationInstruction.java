@@ -57,10 +57,32 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		public ClassMethodBlock block;
 		public AccessLevel level;
 		public ClassMethodBlock ppp;
+		// Surcharges supplémentaires de même nom et même nombre de paramètres, mais de
+		// types différents (ex: foo(integer) / foo(string)). `block`/`level` portent la
+		// première version ; les autres sont stockées ici. Null tant qu'il n'y a pas de
+		// surcharge (cas courant), pour ne rien changer au comportement existant.
+		public ArrayList<ClassDeclarationMethod> overloads;
 
 		public ClassDeclarationMethod(ClassMethodBlock block, AccessLevel level) {
 			this.block = block;
 			this.level = level;
+		}
+
+		/** Toutes les versions de ce groupe : la principale + les surcharges typées. */
+		public ArrayList<ClassDeclarationMethod> allVersions() {
+			var list = new ArrayList<ClassDeclarationMethod>();
+			list.add(this);
+			if (overloads != null) list.addAll(overloads);
+			return list;
+		}
+
+		public void addOverload(ClassMethodBlock block, AccessLevel level) {
+			if (overloads == null) overloads = new ArrayList<>();
+			overloads.add(new ClassDeclarationMethod(block, level));
+		}
+
+		public boolean isOverloaded() {
+			return overloads != null && !overloads.isEmpty();
 		}
 	}
 
@@ -245,17 +267,6 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		// On regarde si il n'y a pas déjà une méthode statique du même nom
 		if (staticMethods.containsKey(token.getWord())) {
 			compiler.addError(new AnalyzeError(token, AnalyzeErrorLevel.ERROR, Error.DUPLICATED_METHOD));
-		} else {
-			var m = methods.get(token.getWord());
-			if (m != null) {
-				for (int p = method.getMinParameters(); p <= method.getMaxParameters(); ++p) {
-					if (m.containsKey(p)) {
-						var l = compiler.getVersion() >= 4 ? AnalyzeErrorLevel.ERROR : AnalyzeErrorLevel.WARNING;
-						compiler.addError(new AnalyzeError(token, l, Error.DUPLICATED_METHOD));
-						break;
-					}
-				}
-			}
 		}
 		if (!methods.containsKey(token.getWord())) {
 			methods.put(token.getWord(), new HashMap<>());
@@ -263,9 +274,56 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		} else {
 			methodVariables.get(token.getWord()).setType(Type.versions(methodVariables.get(token.getWord()).getType(), method.getType()));
 		}
+		registerMethodVersions(compiler, token, methods.get(token.getWord()), method, level);
+	}
+
+	/**
+	 * Enregistre une méthode pour chacune de ses arités (min..max, à cause des
+	 * paramètres par défaut). Si une méthode existe déjà à une arité donnée :
+	 * - mêmes types de paramètres -> vrai doublon (erreur / warning) ;
+	 * - types différents -> surcharge ajoutée à côté de la version existante.
+	 */
+	private void registerMethodVersions(WordCompiler compiler, Token token, HashMap<Integer, ClassDeclarationMethod> versions, ClassMethodBlock method, AccessLevel level) throws LeekCompilerException {
+		int version = compiler.getVersion();
 		for (int p = method.getMinParameters(); p <= method.getMaxParameters(); ++p) {
-			methods.get(token.getWord()).put(p, new ClassDeclarationMethod(method, level));
+			var existing = versions.get(p);
+			if (existing == null) {
+				versions.put(p, new ClassDeclarationMethod(method, level));
+			} else {
+				String newSig = overloadSignature(method, p, version);
+				boolean duplicate = false;
+				for (var v : existing.allVersions()) {
+					if (overloadSignature(v.block, p, version).equals(newSig)) {
+						duplicate = true;
+						break;
+					}
+				}
+				if (duplicate) {
+					var l = version >= 4 ? AnalyzeErrorLevel.ERROR : AnalyzeErrorLevel.WARNING;
+					compiler.addError(new AnalyzeError(token, l, Error.DUPLICATED_METHOD));
+					// On conserve le comportement historique d'écrasement de la version principale.
+					versions.put(p, new ClassDeclarationMethod(method, level));
+				} else {
+					// Surcharge typée : types de paramètres différents à arité égale.
+					existing.addOverload(method, level);
+				}
+			}
 		}
+	}
+
+	/**
+	 * Signature « effacée » d'une méthode à une arité donnée : la liste des types
+	 * Java de ses `arity` premiers paramètres. Deux méthodes de même signature ne
+	 * peuvent pas coexister (elles produiraient deux méthodes Java identiques).
+	 */
+	private static String overloadSignature(ClassMethodBlock block, int arity, int version) {
+		var sb = new StringBuilder();
+		var params = block.getParametersDeclarations();
+		for (int i = 0; i < arity; ++i) {
+			if (i > 0) sb.append(',');
+			sb.append(params.get(i).getType().getJavaPrimitiveName(version));
+		}
+		return sb.toString();
 	}
 
 	public boolean hasMethod(String name, int paramCount) {
@@ -286,6 +344,8 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		} else {
 			var sm = staticMethods.get(token.getWord());
 			if (sm != null) {
+				// Les méthodes statiques ne supportent pas (encore) la surcharge par type :
+				// même nombre de paramètres = doublon.
 				for (int p = method.getMinParameters(); p <= method.getMaxParameters(); ++p) {
 					if (sm.containsKey(p)) {
 						var l = compiler.getVersion() >= 4 ? AnalyzeErrorLevel.ERROR : AnalyzeErrorLevel.WARNING;
@@ -400,8 +460,10 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		}
 		for (var method : methods.values()) {
 			for (var entry : method.entrySet()) {
-				if (entry.getKey() == entry.getValue().block.getMaxParameters()) {
-					entry.getValue().block.preAnalyze(compiler);
+				for (var overload : entry.getValue().allVersions()) {
+					if (entry.getKey() == overload.block.getMaxParameters()) {
+						overload.block.preAnalyze(compiler);
+					}
 				}
 			}
 		}
@@ -473,35 +535,49 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 
 		for (var method : methods.entrySet()) {
 			for (var version : method.getValue().entrySet()) {
-				var block = version.getValue().block;
+			  for (var overload : version.getValue().allVersions()) {
+				var block = overload.block;
 				emitMethodAnnotationWarnings(block, method.getKey(), compiler);
 				block.analyze(compiler);
 
-				// Méthode surchargée ?
+				// Méthode surchargée (override) ? On ne considère une méthode parente comme
+				// surchargée que si elle a la *même signature* de paramètres : une méthode de
+				// même nom et même arité mais de types différents est une surcharge typée
+				// (overload), pas une redéfinition (override).
+				String sig = overloadSignature(block, version.getKey(), compiler.getVersion());
 				var current = parent;
 				boolean foundInParent = false;
 				while (current != null) {
 					var parentMethod = current.methods.get(method.getKey());
 					if (parentMethod != null) {
-						var parentVersion = parentMethod.get(version.getKey());
-						if (parentVersion != null) {
-							foundInParent = true;
-							if (block.getType().accepts(parentVersion.block.getType()) != CastType.EQUALS) {
-								compiler.addError(new AnalyzeError(block.getLocation(), AnalyzeErrorLevel.ERROR, Error.OVERRIDDEN_METHOD_DIFFERENT_TYPE, new String[] {
-									block.getType().toString(),
-									parentVersion.block.getType().toString()
-								}));
+						var parentEntry = parentMethod.get(version.getKey());
+						if (parentEntry != null) {
+							ClassDeclarationMethod parentVersion = null;
+							for (var pv : parentEntry.allVersions()) {
+								if (overloadSignature(pv.block, version.getKey(), compiler.getVersion()).equals(sig)) {
+									parentVersion = pv;
+									break;
+								}
 							}
-							// Une override ne peut pas réduire la visibilité (LSP : ce qui est public dans le parent doit le rester).
-							// Warning en LS4 pour ne pas casser les IAs existantes ; à passer en ERROR en LS5.
-							if (version.getValue().level.ordinal() > parentVersion.level.ordinal()) {
-								compiler.addError(new AnalyzeError(block.getLocation(), AnalyzeErrorLevel.WARNING, Error.OVERRIDDEN_METHOD_NARROWER_VISIBILITY, new String[] {
-									method.getKey(),
-									version.getValue().level.toString(),
-									parentVersion.level.toString()
-								}));
+							if (parentVersion != null) {
+								foundInParent = true;
+								if (block.getType().accepts(parentVersion.block.getType()) != CastType.EQUALS) {
+									compiler.addError(new AnalyzeError(block.getLocation(), AnalyzeErrorLevel.ERROR, Error.OVERRIDDEN_METHOD_DIFFERENT_TYPE, new String[] {
+										block.getType().toString(),
+										parentVersion.block.getType().toString()
+									}));
+								}
+								// Une override ne peut pas réduire la visibilité (LSP : ce qui est public dans le parent doit le rester).
+								// Warning en LS4 pour ne pas casser les IAs existantes ; à passer en ERROR en LS5.
+								if (overload.level.ordinal() > parentVersion.level.ordinal()) {
+									compiler.addError(new AnalyzeError(block.getLocation(), AnalyzeErrorLevel.WARNING, Error.OVERRIDDEN_METHOD_NARROWER_VISIBILITY, new String[] {
+										method.getKey(),
+										overload.level.toString(),
+										parentVersion.level.toString()
+									}));
+								}
+								break;
 							}
-							break;
 						}
 					}
 					current = current.parent;
@@ -510,6 +586,7 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 				if (!foundInParent && block.hasAnnotation(Annotation.OVERRIDE)) {
 					compiler.addError(new AnalyzeError(block.getLocation(), AnalyzeErrorLevel.ERROR, Error.ANNOTATION_OVERRIDE_NO_PARENT, new String[] { method.getKey() }));
 				}
+			  }
 			}
 		}
 		for (var staticMethod : staticMethods.entrySet()) {
@@ -706,19 +783,21 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		// Déclaration des méthodes
 		for (var method : methods.entrySet()) {
 			for (var version : method.getValue().entrySet()) {
-				final var block = version.getValue().block;
+			  final int arity = version.getKey();
+			  for (var overload : version.getValue().allVersions()) {
+				final var block = overload.block;
 				mainblock.getWordCompiler().setCurrentBlock(block);
 				writer.currentBlock = block;
 
 				String methodName = method.getKey();
 
-				if (version.getValue().level == AccessLevel.PROTECTED) {
+				if (overload.level == AccessLevel.PROTECTED) {
 					writer.addCode("@Protected ");
-				} else if (version.getValue().level == AccessLevel.PRIVATE) {
+				} else if (overload.level == AccessLevel.PRIVATE) {
 					writer.addCode("@Private ");
 				}
 				writer.addCode("public " + block.getType().returnType().getJavaPrimitiveName(mainblock.getVersion()) + " u_" + methodName + "(");
-				for (int a = 0; a < version.getKey(); ++a) {
+				for (int a = 0; a < arity; ++a) {
 					var arg = block.getParametersDeclarations().get(a);
 					var letter = arg.isCaptured() ? "p" : "u";
 					if (a > 0) writer.addCode(", ");
@@ -735,7 +814,7 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 					var arg = block.getParametersDeclarations().get(a);
 					if (arg.isCaptured()) {
 						writer.addCode("final var u_" + arg.getToken() + " = new Box<" + arg.getType().getJavaName(mainblock.getVersion()) + ">(" + writer.getAIThis() + ", ");
-						if (a < version.getKey()) {
+						if (a < arity) {
 							writer.addCode("p_" + arg.getToken());
 						} else {
 							block.getDefaultValues().get(a).writeJavaCode(mainblock, writer, false);
@@ -744,7 +823,7 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 						writer.addLine(");");
 					} else {
 						// Valeur par défaut
-						if (a >= version.getKey()) {
+						if (a >= arity) {
 							var defaultValue = block.getDefaultValues().get(a);
 							writer.addCode("final " + arg.getType().getJavaName(mainblock.getVersion()) + " u_" + arg.getName() + " = ");
 							if (arg.getType() != Type.ANY && !arg.getType().isPrimitive()) {
@@ -758,7 +837,7 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 				}
 				// writer.addCounter(1);
 				// Sous-version
-				if (version.getKey() < block.getMaxParameters()) {
+				if (arity < block.getMaxParameters()) {
 					writer.addCode("return u_" + method.getKey() + "(");
 					for (int a = 0; a < block.getParametersDeclarations().size(); ++a) {
 						var arg = block.getParametersDeclarations().get(a);
@@ -772,11 +851,12 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 					}
 					writer.addLine(");");
 				} else {
-					version.getValue().block.writeJavaCode(mainblock, writer, false);
+					block.writeJavaCode(mainblock, writer, false);
 				}
 				writer.addLine("}");
 				writer.currentBlock = null;
 				mainblock.getWordCompiler().setCurrentBlock(null);
+			  }
 			}
 		}
 
@@ -947,16 +1027,19 @@ public class ClassDeclarationInstruction extends LeekInstruction {
 		// Méthodes
 		for (var method : methods.entrySet()) {
 			for (var version : method.getValue().entrySet()) {
-				writer.addCode(className);
-				writer.addLine(".addMethod(\"" + method.getKey() + "\", " + version.getKey() + ", new FunctionLeekValue(0) { public Object run(AI ai, Object thiz, Object... args) throws LeekRunException {");
-				writer.addCode("return ((" + className + ") thiz).u_" + method.getKey() + "(");
-				int i = 0;
-				for (var a = 0; a < version.getKey(); ++a) {
-					if (a > 0) writer.addCode(", ");
-					writer.addCode("(" + version.getValue().block.getParametersDeclarations().get(a).getType().getJavaName(mainblock.getVersion()) + ") ");
-					writer.addCode("args[" + i++ + "]");
+				final int arity = version.getKey();
+				for (var overload : version.getValue().allVersions()) {
+					writer.addCode(className);
+					writer.addLine(".addMethod(\"" + method.getKey() + "\", " + arity + ", new FunctionLeekValue(0) { public Object run(AI ai, Object thiz, Object... args) throws LeekRunException {");
+					writer.addCode("return ((" + className + ") thiz).u_" + method.getKey() + "(");
+					int i = 0;
+					for (var a = 0; a < arity; ++a) {
+						if (a > 0) writer.addCode(", ");
+						writer.addCode("(" + overload.block.getParametersDeclarations().get(a).getType().getJavaName(mainblock.getVersion()) + ") ");
+						writer.addCode("args[" + i++ + "]");
+					}
+					writer.addLine("); }}, AccessLevel." + overload.level.name() + ");");
 				}
-				writer.addLine("); }}, AccessLevel." + version.getValue().level.name() + ");");
 			}
 			writer.addCode(className);
 			writer.addLine(".addGenericMethod(\"" + method.getKey() + "\");");

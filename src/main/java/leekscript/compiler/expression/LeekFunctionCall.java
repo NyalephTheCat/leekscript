@@ -40,6 +40,11 @@ public class LeekFunctionCall extends Expression {
 	private LeekFunctions system_function = null;
 	private boolean is_method = false;
 	private boolean is_static_method = false;
+	// La méthode appelée possède plusieurs surcharges de même arité mais de types
+	// différents : on passe par un dispatch dynamique (callObjectAccess) qui choisit
+	// la bonne surcharge selon les types réels des arguments à l'exécution.
+	private boolean is_overloaded_method = false;
+	private String overloaded_field = null;
 	private ClassDeclarationMethod method;
 	private ClassMethodBlock constructorBlock = null;
 	private Type functionType = Type.ANY;
@@ -153,7 +158,28 @@ public class LeekFunctionCall extends Expression {
 		FunctionBlock user_function = null;
 		boolean convertPrimitive = false;
 
-		if (mExpression instanceof LeekObjectAccess) {
+		if (is_overloaded_method) {
+			// Méthode surchargée par type : on délègue à callObjectAccess qui choisit la
+			// bonne surcharge à l'exécution selon les types réels des arguments. Les
+			// arguments sont passés tels quels (boxés) pour ne pas figer une surcharge.
+			if (this.type != Type.ANY && this.type != Type.VOID && !this.type.isPrimitive()) {
+				writer.addCode("(" + this.type.getJavaPrimitiveName(mainblock.getVersion()) + ") ");
+			}
+			writer.addCode("callObjectAccess(");
+			if (mExpression instanceof LeekObjectAccess oa) {
+				var object = oa.getObject();
+				if (object instanceof LeekVariable v && v.getVariableType() == VariableType.THIS) {
+					writer.addCode(mainblock.getWordCompiler().getCurrentClassVariable() + ".this");
+				} else {
+					object.writeJavaCode(mainblock, writer, true);
+				}
+			} else {
+				// Appel non qualifié `foo(x)` à l'intérieur de la classe : receveur = this
+				writer.addCode(mainblock.getWordCompiler().getCurrentClassVariable() + ".this");
+			}
+			writer.addCode(", \"" + overloaded_field + "\", \"u_" + overloaded_field + "\", " + mainblock.getWordCompiler().getCurrentClassVariable());
+			// Les arguments sont ajoutés par la boucle ci-dessous (addComma = true).
+		} else if (mExpression instanceof LeekObjectAccess) {
 			// Object access : object.field()
 			var object = ((LeekObjectAccess) mExpression).getObject();
 			var field = ((LeekObjectAccess) mExpression).getField();
@@ -359,7 +385,7 @@ public class LeekFunctionCall extends Expression {
 			if (i < mParameters.size()) {
 				var parameter = mParameters.get(i);
 				// Java doesn't like a single null for Object... argument
-				if (argCount == 1 && parameter.getType() == Type.NULL && user_function == null && system_function == null && !unsafe && !is_method && !is_static_method) {
+				if (argCount == 1 && parameter.getType() == Type.NULL && user_function == null && system_function == null && !unsafe && ((!is_method && !is_static_method) || is_overloaded_method)) {
 					writer.addCode("new Object[] { null }");
 					continue;
 				}
@@ -475,7 +501,14 @@ public class LeekFunctionCall extends Expression {
 								if (m.level == AccessLevel.PRIVATE && compiler.getCurrentClass() != current) {
 									compiler.addError(new AnalyzeError(v.getToken(), AnalyzeErrorLevel.ERROR, Error.PRIVATE_METHOD, new String[] { current.getName(), v.getName() }));
 								}
-								functionType = m.block.getType();
+								if (m.isOverloaded()) {
+									// Dispatch dynamique : on ne fige pas une surcharge, types réels à l'exécution
+									is_overloaded_method = true;
+									overloaded_field = v.getName();
+									functionType = Type.ANY;
+								} else {
+									functionType = m.block.getType();
+								}
 								break end;
 							}
 						}
@@ -613,9 +646,17 @@ public class LeekFunctionCall extends Expression {
 								} else if (method.level == AccessLevel.PROTECTED && (compiler.getCurrentClass() == null || !compiler.getCurrentClass().descendsFrom(current))) {
 									compiler.addError(new AnalyzeError(oa.getLastToken(), AnalyzeErrorLevel.ERROR, Error.PROTECTED_METHOD, new String[] { current.getName(), oa.getField() }));
 								}
-								// Résout l'overload concrète pour que compileConvert utilise les types
-								// déclarés au lieu du compound (Versions) qui dégrade en (Object).
-								functionType = method.block.getType();
+								boolean isSuper = o instanceof LeekVariable sv2 && sv2.getVariableType() == VariableType.SUPER;
+								if (method.isOverloaded() && !isSuper) {
+									// Surcharges typées : dispatch dynamique selon les types réels.
+									is_overloaded_method = true;
+									overloaded_field = oa.getField();
+									functionType = Type.ANY;
+								} else {
+									// Résout l'overload concrète pour que compileConvert utilise les types
+									// déclarés au lieu du compound (Versions) qui dégrade en (Object).
+									functionType = method.block.getType();
+								}
 								resolved = true;
 								break end;
 							}

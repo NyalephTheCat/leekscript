@@ -345,6 +345,35 @@ public class TestObject extends TestCommon {
 		section("Overloaded instance method with typed params (issue #3869)");
 		code_v2_("class B { integer x = 0 } class A { m(B b, B c) { return 1 } m(any a, any b, any c) { return 2 } } var a = new A() var b = new B() return a.m(b, b)").equals("1");
 
+		section("Method overloading by parameter type (same arity, different types)");
+		// Dispatch dynamique selon le type réel des arguments
+		code_v4_("class A { f(integer x) { return 'int:' + x } f(string x) { return 'str:' + x } } var a = new A() return a.f(5)").equals("\"int:5\"");
+		code_v4_("class A { f(integer x) { return 'int:' + x } f(string x) { return 'str:' + x } } var a = new A() return a.f('hi')").equals("\"str:hi\"");
+		// Dispatch via this.
+		code_v4_("class A { f(integer x) { return 'int' } f(string x) { return 'str' } g() { return this.f(3) + this.f('x') } } return new A().g()").equals("\"intstr\"");
+		// Dispatch via appel non qualifié
+		code_v4_("class A { f(integer x) { return 'int' } f(string x) { return 'str' } g() { return f(3) + f('x') } } return new A().g()").equals("\"intstr\"");
+		// Dispatch quand le receveur est de type any
+		code_v4_("class A { f(integer x) { return 1 } f(string x) { return 2 } } var a = new A() any o = a return o.f('z')").equals("2");
+		// Trois surcharges integer / real / string
+		code_v4_("class A { f(integer x){return 1} f(real x){return 2} f(string x){return 3} } var a = new A() return [a.f(1), a.f(1.5), a.f('s')]").equals("[1, 2, 3]");
+		// Surcharges sur des classes utilisateur
+		code_v4_("class P {} class Q {} class A { f(P x){return 'p'} f(Q x){return 'q'} } var a = new A() return a.f(new Q())").equals("\"q\"");
+		// Surcharge typée + surcharge any : la plus spécifique gagne
+		code_v4_("class A { f(integer x){return 'i'} f(x){return 'any'} } var a = new A() return a.f(7)").equals("\"i\"");
+		code_v4_("class A { f(integer x){return 'i'} f(x){return 'any'} } var a = new A() return a.f('z')").equals("\"any\"");
+		// Surcharge à travers l'héritage (parent + sous-classe)
+		code_v4_("class A { f(integer x){return 'pi'} } class B extends A { f(string x){return 'cs'} } var b = new B() return [b.f(1), b.f('x')]").equals("[\"pi\", \"cs\"]");
+		// Surcharge avec paramètres par défaut
+		code_v4_("class A { f(integer x){return 'i'+x} f(string x, integer y=9){return 's'+x+y} } var a = new A() return [a.f(2), a.f('q'), a.f('q', 5)]").equals("[\"i2\", \"sq9\", \"sq5\"]");
+		// Méthode surchargée utilisée comme valeur de première classe
+		code_v4_("class A { f(integer x){return 10} f(string x){return 20} } var a = new A() var m = a.f return [m(a, 3), m(a, 'q')]").equals("[10, 20]");
+		// Vrais doublons : mêmes types -> erreur
+		code_v4_("class A { f(integer x){return 1} f(integer x){return 2} }").error(Error.DUPLICATED_METHOD);
+		code_v4_("class A { f(x){return 1} f(y){return 2} }").error(Error.DUPLICATED_METHOD);
+		// Types qui s'effacent vers le même type Java -> impossible à distinguer -> erreur
+		code_v4_("class A { f(Array<integer> x){return 1} f(Array<string> x){return 2} }").error(Error.DUPLICATED_METHOD);
+
 		section("Field access by array access");
 		code_v2_("var test = {} test['a'] = 8 return test").equals("{a: 8}");
 		code_v2_("var test = {} test['a'] = 8 test['b'] = 12 return test").equals("{a: 8, b: 12}");

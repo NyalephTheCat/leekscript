@@ -3361,6 +3361,87 @@ public abstract class AI {
 		return null;
 	}
 
+	/**
+	 * Résolution de méthode tenant compte du type des arguments, pour dispatcher
+	 * entre des surcharges de même nom et même nombre de paramètres mais de types
+	 * différents (ex: {@code foo(integer)} vs {@code foo(string)}).
+	 *
+	 * Les méthodes Java générées sont distinctes (Java surcharge par signature),
+	 * mais {@link Method#invoke} ne fait aucune résolution : on choisit donc ici la
+	 * surcharge dont les types de paramètres correspondent le mieux aux types réels
+	 * des arguments. S'il n'y a qu'une seule candidate du bon arity, on la renvoie
+	 * directement (comportement identique à {@link #findMethod}).
+	 */
+	public static Method findMethodForArguments(Class<?> clazz, String methodName, Object[] args) {
+		var candidates = methodCache.get(clazz).get(methodName);
+		if (candidates == null) return null;
+
+		Method onlyMatch = null;
+		int matchCount = 0;
+		for (var m : candidates) {
+			if (m.getParameterCount() == args.length) {
+				onlyMatch = m;
+				matchCount++;
+			}
+		}
+		if (matchCount <= 1) return onlyMatch; // 0 ou 1 candidate : pas d'ambiguïté
+
+		// Plusieurs surcharges de même arity : on score chacune selon les types réels
+		Method best = null;
+		int bestScore = Integer.MIN_VALUE;
+		for (var m : candidates) {
+			if (m.getParameterCount() != args.length) continue;
+			var paramTypes = m.getParameterTypes();
+			int score = 0;
+			boolean compatible = true;
+			for (int i = 0; i < paramTypes.length; ++i) {
+				int s = argumentScore(paramTypes[i], args[i]);
+				if (s < 0) { compatible = false; break; }
+				score += s;
+			}
+			if (compatible && score > bestScore) {
+				bestScore = score;
+				best = m;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * Score de compatibilité entre un type de paramètre Java et un argument réel.
+	 * -1 = incompatible, 0 = compatible mais peu spécifique (ex: Object), valeurs
+	 * plus élevées = correspondance plus précise (type exact > sous-type).
+	 */
+	private static int argumentScore(Class<?> paramType, Object arg) {
+		Class<?> boxed = boxedType(paramType);
+		if (arg == null) {
+			// null s'accommode de tout type non primitif
+			return paramType.isPrimitive() ? -1 : 1;
+		}
+		Class<?> argClass = arg.getClass();
+		if (boxed == argClass) {
+			// Object exactement : accepte tout mais peu spécifique
+			return boxed == Object.class ? 0 : 3;
+		}
+		if (boxed.isAssignableFrom(argClass)) {
+			return boxed == Object.class ? 0 : 2;
+		}
+		return -1;
+	}
+
+	private static Class<?> boxedType(Class<?> type) {
+		if (!type.isPrimitive()) return type;
+		if (type == long.class) return Long.class;
+		if (type == double.class) return Double.class;
+		if (type == boolean.class) return Boolean.class;
+		if (type == int.class) return Integer.class;
+		if (type == char.class) return Character.class;
+		if (type == float.class) return Float.class;
+		if (type == short.class) return Short.class;
+		if (type == byte.class) return Byte.class;
+		return type;
+	}
+
 	public static java.lang.reflect.Field[] getFieldsCached(Class<?> clazz) {
 		return fieldCache.get(clazz);
 	}
@@ -3396,7 +3477,7 @@ public abstract class AI {
 		}
 		Class<?> valueClass = value.getClass();
 		try {
-			Method m = findMethod(valueClass, "u_" + method, args.length);
+			Method m = findMethodForArguments(valueClass, "u_" + method, args);
 			if (m == null) return null;
 			if (m.isAnnotationPresent(Private.class)) {
 				if (fromClass == null || valueClass != fromClass.clazz) {
@@ -3428,7 +3509,7 @@ public abstract class AI {
 		if (value instanceof NativeObjectLeekValue) {
 			Class<?> valueClass = value.getClass();
 			try {
-				Method m = findMethod(valueClass, method, args.length);
+				Method m = findMethodForArguments(valueClass, method, args);
 				if (m == null) {
 					try {
 						var f = getFieldCached(valueClass, field);
