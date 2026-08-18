@@ -206,11 +206,46 @@ public class Profiler {
 	 * @param prefix préfixe de racine (typiquement l'entité), ou {@code null}
 	 */
 	public void writeFolded(Appendable out, String prefix) throws IOException {
+		writeFolded(out, prefix, null);
+	}
+
+	/**
+	 * Même chose, restreinte aux tours racines dont le libellé passe {@code acceptRoot}.
+	 *
+	 * <p>C'est ce qui permet un fichier PAR ENTITÉ : une invocation exécute la fonction d'IA de
+	 * son invocateur sur l'objet AI de celui-ci, donc son profil vit dans l'arbre de
+	 * l'invocateur — mais sous une racine à son propre nom, qu'on peut isoler ici.
+	 *
+	 * @param acceptRoot filtre sur le libellé des racines, ou {@code null} pour tout écrire
+	 */
+	public void writeFolded(Appendable out, String prefix, java.util.function.Predicate<String> acceptRoot) throws IOException {
 		StringBuilder path = new StringBuilder();
 		if (prefix != null && !prefix.isEmpty()) {
 			path.append(sanitize(prefix));
 		}
-		writeFolded(out, root, path);
+		for (Node child : root.getChildren()) {
+			if (acceptRoot != null && !acceptRoot.test(getLabel(child.frameId))) continue;
+			writeFolded(out, child, path);
+		}
+	}
+
+	/** Libellés des tours racines de l'arbre (une par entité, plus les hooks). */
+	public java.util.List<String> getRootLabels() {
+		var labels = new ArrayList<String>();
+		for (Node child : root.getChildren()) {
+			labels.add(getLabel(child.frameId));
+		}
+		return labels;
+	}
+
+	/** Somme des coûts propres des tours racines acceptées par le filtre. */
+	public long getSelfOps(java.util.function.Predicate<String> acceptRoot) {
+		long total = 0;
+		for (Node child : root.getChildren()) {
+			if (acceptRoot != null && !acceptRoot.test(getLabel(child.frameId))) continue;
+			total += sumSelf(child);
+		}
+		return total;
 	}
 
 	private void writeFolded(Appendable out, Node node, StringBuilder path) throws IOException {
