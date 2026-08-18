@@ -192,10 +192,12 @@ public class ClassMethodBlock extends AbstractLeekBlock implements Annotatable {
 
 		// writer.addLine("", getLocation());
 
+		writer.openFrame(writer.frameLabel(getLocation(), clazz.getName() + "." + (isConstructor ? "constructor" : token.getWord())));
 		super.writeJavaCode(mainblock, writer, false);
 		if (mEndInstruction == 0) {
 			writer.addLine("return " + type.returnType().getDefaultValue(writer, mainblock.getVersion()) + ";");
 		}
+		writer.closeFrame();
 	}
 
 	/**

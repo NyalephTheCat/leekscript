@@ -85,6 +85,13 @@ public abstract class AI {
 	}
 
 	protected long mOperations = 0;
+
+	/**
+	 * Profileur optionnel (flamegraph pondéré par les opérations). null hors mode profil ; il
+	 * n'est alimenté que par le code instrumenté émis quand {@code Options.profile()} est vrai,
+	 * et ne modifie jamais {@link #mOperations}.
+	 */
+	protected Profiler profiler = null;
 	public final static int MAX_OPERATIONS = 20_000_000;
 	public long maxOperations = MAX_OPERATIONS;
 
@@ -473,8 +480,71 @@ public abstract class AI {
 		mOperations += nb;
 	}
 
+	/**
+	 * Table des libellés de frames émise par le compilateur dans la classe générée (mode profil
+	 * uniquement). null pour une IA compilée sans instrumentation.
+	 */
+	protected String[] getProfileFrames() {
+		return null;
+	}
+
+	public void setProfiler(Profiler profiler) {
+		this.profiler = profiler;
+		if (profiler != null) {
+			profiler.setStaticFrames(getProfileFrames());
+		}
+	}
+
+	public Profiler getProfiler() {
+		return profiler;
+	}
+
+	/**
+	 * Entrée de fonction instrumentée. Appelée par le code généré en mode profil ; ne consomme
+	 * aucune opération.
+	 */
+	public void enterFrame(int frameId) {
+		if (profiler != null) profiler.enter(frameId, mOperations);
+	}
+
+	/** Sortie de fonction instrumentée (émise dans un {@code finally}). */
+	public void exitFrame() {
+		if (profiler != null) profiler.exit(mOperations);
+	}
+
+	/**
+	 * IA qui porte le profil de ce code. Normalement soi-même ; une invocation
+	 * ({@code BulbAI}) exécute la fonction d'IA de son propriétaire sur l'objet AI du
+	 * propriétaire, donc ses opérations et ses frames y atterrissent.
+	 */
+	public AI profileHost() {
+		return this;
+	}
+
+	/**
+	 * Ouvre une frame racine posée par le moteur ({@code runIA}, {@code staticInit}, hooks,
+	 * tour d'une invocation) — ces points d'entrée ne passent pas par la génération de code.
+	 */
+	public void enterRoot(String label) {
+		var host = profileHost();
+		if (host.profiler != null) {
+			host.profiler.enter(host.profiler.internFrame(label), host.mOperations);
+		}
+	}
+
+	/** Ferme la frame ouverte par {@link #enterRoot} (à placer dans un {@code finally}). */
+	public void exitRoot() {
+		var host = profileHost();
+		if (host.profiler != null) {
+			host.profiler.exit(host.mOperations);
+		}
+	}
+
 	public void resetCounter() {
 		mOperations = 0;
+		// Les deltas du profileur sont calculés sur mOperations : une frame à cheval sur une
+		// remise à zéro donnerait un coût négatif. L'arbre est conservé, seule la pile part.
+		if (profiler != null) profiler.resetStack();
 	}
 
 	public void increaseRAMDirect(int ram) {

@@ -159,11 +159,13 @@ public class AnonymousFunctionBlock extends AbstractLeekBlock {
 			}
 		}
 		writer.addLine(sb.toString(), getLocation());
+		writer.openFrame(writer.frameLabel(getLocation(), "#anonymous@" + (getLocation() == null ? 0 : getLocation().getStartLine())));
 		writer.addCounter(1);
 		super.writeJavaCode(mainblock, writer, false);
 		if (mEndInstruction == 0) {
 			writer.addLine("return " + type.returnType().getDefaultValue(writer, mainblock.getVersion()) + ";");
 		}
+		writer.closeFrame();
 		writer.addCode("}");
 		mainblock.getWordCompiler().setCurrentFunction(previousFunction);
 	}

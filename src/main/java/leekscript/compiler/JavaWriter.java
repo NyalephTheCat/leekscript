@@ -34,6 +34,9 @@ public class JavaWriter {
 	public HashSet<LeekFunctions> anonymousSystemFunctions = new HashSet<>();
 	public HashSet<FunctionBlock> anonymousUserFunctions = new HashSet<>();
 	private boolean operationsEnabled = true;
+	/** Libellés de frames du profileur, dans l'ordre des identifiants émis (mode profil). */
+	private final ArrayList<String> profileFrames = new ArrayList<>();
+	private final HashMap<String, Integer> profileFrameIds = new HashMap<>();
 	public boolean lastInstruction = false;
 	public Options options;
 
@@ -116,12 +119,56 @@ public class JavaWriter {
 			mCode.append(", ");
 		}
 		mCode.append("};}\n\n");
+
+		if (isProfileEnabled()) {
+			mCode.append("protected String[] getProfileFrames() { return new String[] {");
+			for (var label : profileFrames) {
+				mCode.append("\"").append(label.replace("\\", "\\\\").replace("\"", "\\\"")).append("\", ");
+			}
+			mCode.append("};}\n\n");
+		}
 	}
 
 	public void addCounter(int count) {
 		if (operationsEnabled) {
 			addCode("ops(" + count + ");");
 		}
+	}
+
+	/** Libellé de frame « fichier.leek:nom », lisible tel quel dans un flamegraph. */
+	public String frameLabel(Location location, String name) {
+		var file = location != null && location.getFile() != null ? location.getFile().getPath() : "?";
+		return file + ":" + name;
+	}
+
+	public boolean isProfileEnabled() {
+		return options != null && options.profile();
+	}
+
+	/**
+	 * Ouvre une frame de profilage autour du corps d'une fonction. À appairer avec
+	 * {@link #closeFrame()}. N'émet rien hors mode profil, et ne consomme aucune opération : le
+	 * profileur lit le compteur, il ne l'alimente pas.
+	 */
+	public void openFrame(String label) {
+		if (!isProfileEnabled()) return;
+		var id = profileFrameIds.get(label);
+		if (id == null) {
+			id = profileFrames.size();
+			profileFrames.add(label);
+			profileFrameIds.put(label, id);
+		}
+		addLine(getAIThis() + ".enterFrame(" + id + "); try {");
+	}
+
+	/**
+	 * Ferme la frame ouverte par {@link #openFrame}. Le {@code finally} garantit l'appariement
+	 * quelle que soit la sortie : return anticipé, garde à sortie anticipée, exception
+	 * utilisateur, dépassement du budget d'opérations ou débordement de pile.
+	 */
+	public void closeFrame() {
+		if (!isProfileEnabled()) return;
+		addLine("} finally { " + getAIThis() + ".exitFrame(); }");
 	}
 
 	public int getCurrentLine() {

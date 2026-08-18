@@ -111,6 +111,15 @@ public class JavaCompiler {
 		}
 	}
 
+	/**
+	 * Signature du jeu de sources, plus le mode de compilation : le code instrumenté pour le
+	 * profilage diffère du code de production, les deux ne doivent jamais se servir l'un l'autre
+	 * dans le cache (RAM ou disque).
+	 */
+	private static long signature(AIFile file, Options options) {
+		return signature(file) * 31 + (options.profile() ? 1 : 0);
+	}
+
 	private static long signature(AIFile file) {
 		var fs = LeekScript.getFileSystem();
 		long sig = file.getTimestamp();
@@ -128,13 +137,13 @@ public class JavaCompiler {
 		return sig;
 	}
 
-	private static AI loadFromRamCache(AIFile file, File java, File lines) throws LeekScriptException {
+	private static AI loadFromRamCache(AIFile file, File java, File lines, Options options) throws LeekScriptException {
 		var ref = aiCache.get(file.getJavaClass());
 		var entry = ref != null ? ref.get() : null;
 		if (ref != null && entry == null) {
 			System.out.println("[SoftRef] Class " + file.getJavaClass() + " was garbage collected, reloading");
 		}
-		if (entry == null || file.getTimestamp() <= 0 || entry.signature != signature(file)) {
+		if (entry == null || file.getTimestamp() <= 0 || entry.signature != signature(file, options)) {
 			return null;
 		}
 		try {
@@ -162,16 +171,16 @@ public class JavaCompiler {
 		// hash, can't be compared via lastModified).
 		File sigFile = Paths.get(IA_PATH, file.getJavaClass() + ".sig").toFile();
 
-		AI cached = loadFromRamCache(file, java, lines);
+		AI cached = loadFromRamCache(file, java, lines, options);
 		if (cached != null) return cached;
 
 		Object lock = compilationLocks.computeIfAbsent(file.getJavaClass(), k -> new Object());
 		synchronized (lock) {
 
-			cached = loadFromRamCache(file, java, lines);
+			cached = loadFromRamCache(file, java, lines, options);
 			if (cached != null) return cached;
 
-			long sig = signature(file);
+			long sig = signature(file, options);
 			if (options.useCache() && file.getTimestamp() > 0 && compiled.exists() && compiled.length() != 0 && readSignatureFile(sigFile) == sig) {
 				try {
 					// ClassLoader éphémère par AI pour permettre le GC des classes ;
@@ -302,7 +311,7 @@ public class JavaCompiler {
 				ai.increaseRAMDirect((int) (java.length() * 10));
 
 				if (options.useCache()) {
-					long currentSig = signature(file);
+					long currentSig = signature(file, options);
 					writeSignatureFile(sigFile, currentSig);
 					aiCache.put(file.getJavaClass(), new AIClassSoftReference(file.getJavaClass(), new AIClassEntry(clazz, currentSig), refQueue));
 				}

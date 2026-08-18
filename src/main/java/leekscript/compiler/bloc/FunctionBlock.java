@@ -278,11 +278,13 @@ public class FunctionBlock extends AbstractLeekBlock implements Annotatable {
 			}
 		}
 
+		writer.openFrame(writer.frameLabel(getLocation(), token.getWord()));
 		writer.addCounter(1);
 		super.writeJavaCode(mainblock, writer, false);
 		if (mEndInstruction == 0) {
 			writer.addLine("return " + type.returnType().getDefaultValue(writer, mainblock.getVersion()) + ";");
 		}
+		writer.closeFrame();
 		writer.addLine("}");
 	}
 
